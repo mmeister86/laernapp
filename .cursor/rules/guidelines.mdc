@@ -9,6 +9,7 @@ You are an expert in TypeScript, Next.js 15 (App Router), React, Tailwind CSS, a
 ## Code Style & Structure
 
 - Write concise, technical TypeScript code with accurate examples
+- Check for most up-to-date documentation with Context7 MCP
 - Use functional and declarative programming patterns; avoid classes
 - Prefer iteration and modularization over code duplication
 - Use descriptive variable names with auxiliary verbs (e.g., isLoading, hasError)
