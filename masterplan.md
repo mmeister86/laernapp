@@ -444,6 +444,176 @@ Feedback
 └── resolved_at
 ```
 
+### 6.7 Drizzle-Schema (Themenkomplex & Progress)
+
+```typescript
+// packages/database/src/schema/themenkomplex.ts
+import {
+  pgTable,
+  uuid,
+  varchar,
+  integer,
+  jsonb,
+  timestamp,
+} from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
+import { users } from "./users";
+import { userProgress } from "./progress";
+
+export const themenkomplexe = pgTable("themenkomplexe", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  title: varchar("title", { length: 200 }).notNull(),
+  fach: varchar("fach", { length: 50 }).notNull(),
+  classLevel: integer("class_level").notNull(),
+  bundesland: varchar("bundesland", { length: 50 }),
+  schoolType: varchar("school_type", { length: 50 }),
+  lehrplanReference: varchar("lehrplan_reference", { length: 500 }),
+  orderIndex: integer("order_index"),
+
+  // Content stored as JSONB for flexibility
+  lernkarten: jsonb("lernkarten")
+    .$type<
+      Array<{
+        id: string;
+        frontText: string;
+        backText: string;
+        explanation: string;
+        media?: { type: "image" | "video"; url: string };
+        difficulty: "easy" | "medium" | "hard";
+      }>
+    >()
+    .notNull(),
+
+  quiz: jsonb("quiz")
+    .$type<{
+      passingScore: number;
+      questions: Array<{
+        id: string;
+        type: "multiple_choice" | "true_false" | "fill_blank";
+        questionText: string;
+        options?: string[];
+        correctAnswer: string;
+        explanation: string;
+        media?: { type: "image" | "video"; url: string };
+      }>;
+    }>()
+    .notNull(),
+
+  minigameReference: varchar("minigame_reference", { length: 100 }),
+
+  // Metadata
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  createdBy: uuid("created_by").references(() => users.id),
+  version: integer("version").default(1).notNull(),
+});
+
+export const themenkomplexeRelations = relations(
+  themenkomplexe,
+  ({ many }) => ({
+    progress: many(userProgress),
+  })
+);
+```
+
+```typescript
+// packages/database/src/schema/progress.ts
+import {
+  pgTable,
+  uuid,
+  varchar,
+  integer,
+  jsonb,
+  timestamp,
+} from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
+import { users } from "./users";
+import { themenkomplexe } from "./themenkomplex";
+
+export const userProgress = pgTable("user_progress", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  userId: uuid("user_id")
+    .references(() => users.id)
+    .notNull(),
+  themenkomplexId: uuid("themenkomplex_id")
+    .references(() => themenkomplexe.id)
+    .notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("not_started"), // 'not_started', 'in_progress', 'completed'
+
+  // Lernkarten Progress
+  cardsSeen: integer("cards_seen").default(0).notNull(),
+  cardsTotal: integer("cards_total").notNull(),
+  repetitionSchedule: jsonb("repetition_schedule").$type<
+    Record<string, string>
+  >(), // cardId -> next review date
+
+  // Quiz Attempts
+  quizAttempts: jsonb("quiz_attempts")
+    .$type<
+      Array<{
+        attemptNumber: number;
+        score: number;
+        questionsCorrect: number;
+        questionsTotal: number;
+        timeSpent: number;
+        completedAt: string;
+      }>
+    >()
+    .default([]),
+
+  // Minigame Stats
+  minigameStats: jsonb("minigame_stats").$type<{
+    gamesPlayed: number;
+    timeSpent: number;
+  }>(),
+
+  // Timestamps
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const userProgressRelations = relations(userProgress, ({ one }) => ({
+  user: one(users, {
+    fields: [userProgress.userId],
+    references: [users.id],
+  }),
+  themenkomplex: one(themenkomplexe, {
+    fields: [userProgress.themenkomplexId],
+    references: [themenkomplexe.id],
+  }),
+}));
+```
+
+### 6.8 Drizzle-Client und Relationen-Query (Beispiel)
+
+```typescript
+// packages/database/src/client.ts
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import * as schema from "./schema";
+
+const connectionString = process.env.DATABASE_URL!;
+
+const client = postgres(connectionString);
+export const db = drizzle(client, { schema });
+
+// Type-safe queries with relations
+export async function getUserWithProgress(userId: string) {
+  return db.query.users.findFirst({
+    where: (users, { eq }) => eq(users.id, userId),
+    with: {
+      progress: {
+        with: {
+          themenkomplex: true,
+        },
+      },
+      achievements: true,
+    },
+  });
+}
+```
+
 ---
 
 ## 7. Content-Pipeline mit n8n
@@ -482,7 +652,40 @@ Feedback
 - **Feedback-Loop:** Nutzerfeedback fließt zurück in Content-Pipeline
 - **Versionierung:** Änderungen werden getrackt
 
-### 7.3 Content-Kategorisierung
+### 7.3 Migrations Workflow
+
+**Drizzle Config (packages/database/drizzle.config.ts):**
+
+```typescript
+import type { Config } from "drizzle-kit";
+
+export default {
+  schema: "./src/schema/index.ts",
+  out: "./src/migrations",
+  driver: "pg",
+  dbCredentials: {
+    connectionString: process.env.DATABASE_URL!,
+  },
+} satisfies Config;
+```
+
+**Migration Commands:**
+
+```bash
+# Schema ändern, dann:
+cd packages/database
+
+# Migration generieren
+pnpm drizzle-kit generate:pg
+
+# Migration anwenden
+pnpm drizzle-kit migrate
+
+# Drizzle Studio öffnen (DB GUI)
+pnpm drizzle-kit studio
+```
+
+### 7.4 Content-Kategorisierung
 
 - Fach
 - Klassenstufe
@@ -638,22 +841,48 @@ Feedback
 
 ## 10. Entwicklungsphasen & Milestones
 
-### Phase 1: Fundament (Wochen 1-2)
+### Phase 1: Fundament & Monorepo-Setup (Wochen 1-2)
 
-**Ziel:** Technisches Grundgerüst aufbauen
+**Ziel:** Technisches Grundgerüst und Monorepo aufbauen
 
 **Tasks:**
 
-- [ ] Hetzner VPS aufsetzen, Coolify installieren
-- [ ] Supabase (self-hosted) deployen
-- [ ] Next.js 15 Projekt initialisieren (App Router)
-- [ ] Tailwind + shadcn/ui + neobrutalism.dev einrichten
-- [ ] better-auth konfigurieren
-- [ ] Basic Routing-Struktur
-- [ ] PostgreSQL Schema erstellen (User, Themenkomplex, Progress)
-- [ ] Zod-Schemas definieren
+- [ ] **Hetzner VPS aufsetzen**, Coolify installieren
+- [ ] **Supabase (self-hosted) deployen** via Coolify
+- [ ] **Monorepo initialisieren:**
+  - [ ] Turborepo Setup mit pnpm
+  - [ ] Verzeichnisstruktur erstellen (apps/, packages/)
+  - [ ] Root package.json konfigurieren
+  - [ ] pnpm-workspace.yaml erstellen
+  - [ ] turbo.json konfigurieren
+- [ ] **Shared Packages erstellen:**
+  - [ ] @laernapp/config (Tailwind, ESLint, TypeScript)
+  - [ ] @laernapp/ui (shadcn/ui + neobrutalism)
+  - [ ] @laernapp/types (Shared TypeScript Types)
+  - [ ] @laernapp/database (Drizzle Schema)
+  - [ ] @laernapp/auth (better-auth Setup)
+- [ ] **Landing App initialisieren:**
+  - [ ] Next.js 15 Projekt in apps/landing
+  - [ ] Tailwind + shadcn/ui einrichten
+  - [ ] Basic Homepage mit Neobrutalismus-Design
+- [ ] **Web App initialisieren:**
+  - [ ] Next.js 15 Projekt in apps/web
+  - [ ] Tailwind + shadcn/ui einrichten
+  - [ ] Route-Gruppen erstellen ((auth), (dashboard), etc.)
+- [ ] **Database Setup:**
+  - [ ] Drizzle Schema definieren (User, Themenkomplex, Progress)
+  - [ ] Erste Migrations generieren und anwenden
+  - [ ] Seed-Daten für Development
+- [ ] **Auth Setup:**
+  - [ ] better-auth mit Drizzle Adapter konfigurieren
+  - [ ] Cookie-Domain für Subdomain-Sharing setzen
+  - [ ] Login/Register Forms in apps/web
+- [ ] **Deployment:**
+  - [ ] Landing App auf Coolify deployen → laernapp.de
+  - [ ] Web App auf Coolify deployen → app.laernapp.de
+  - [ ] DNS in Cloudflare konfigurieren
 
-**Deliverable:** Lauffähige App mit Login/Logout
+**Deliverable:** Lauffähiges Monorepo mit zwei deployed Apps, funktionierendem Auth-System
 
 ---
 
@@ -663,18 +892,37 @@ Feedback
 
 **Tasks:**
 
-- [ ] Lernkarten-Komponente bauen
-  - [ ] Flip-Animation
+- [ ] **Lernkarten-System:**
+  - [ ] Lernkarten-Komponente mit Flip-Animation
   - [ ] "Erkläre es mir"-Modal
-  - [ ] Navigation durch Kartenstapel
-- [ ] Quiz-Komponente bauen
-  - [ ] Multiple-Choice-Fragen
-  - [ ] Feedback bei Antworten
+  - [ ] Navigation durch Kartenstapel (Zustand)
+  - [ ] Fortschrittsanzeige
+  - [ ] Spaced-Repetition-Logik (Backend)
+- [ ] **Quiz-System:**
+  - [ ] Quiz-Komponente bauen
+  - [ ] Multiple-Choice UI
+  - [ ] True/False UI
+  - [ ] Lückentext UI
+  - [ ] Sofortiges Feedback bei Antworten
   - [ ] Score-Berechnung
-- [ ] Themenkomplex-Struktur implementieren
-- [ ] Progress-Tracking (Lernkarten gesehen, Quiz-Versuche)
-- [ ] Erste 5 Themenkomplexe manuell erstellen (als Seed-Daten)
-- [ ] Basic Schüler-Dashboard
+  - [ ] Erklärungen bei falschen Antworten
+- [ ] **Themenkomplex-Flow:**
+  - [ ] Themenkomplex-Übersichtsseite
+  - [ ] Themenkomplex-Detailseite
+  - [ ] Flow: Lernkarten → Quiz → Abschluss
+  - [ ] Progress-Tracking in DB (Drizzle)
+- [ ] **API Routes:**
+  - [ ] GET /api/themenkomplex/[id]
+  - [ ] POST /api/progress/card-seen
+  - [ ] POST /api/progress/quiz-submit
+  - [ ] GET /api/progress/user
+- [ ] **Content:**
+  - [ ] Erste 5 Themenkomplexe manuell erstellen (Seed-Daten)
+  - [ ] Bilder aus FreePik/Envato integrieren
+- [ ] **Dashboard (Basic):**
+  - [ ] Schüler-Dashboard mit Fächer-Übersicht
+  - [ ] "Weiter lernen"-Button
+  - [ ] XP und Level anzeigen (statisch noch)
 
 **Deliverable:** Kinder können Themenkomplexe durcharbeiten und Quiz machen
 
@@ -686,20 +934,31 @@ Feedback
 
 **Tasks:**
 
-- [ ] XP-System
-  - [ ] XP-Vergabe bei Quiz-Completion
-  - [ ] Level-Berechnung
-  - [ ] XP-Bar im UI
-- [ ] Streak-System
-  - [ ] Tägliche Aktivität tracken
+- [ ] **XP-System:**
+  - [ ] XP-Vergabe bei Quiz-Completion (Backend-Logik)
+  - [ ] Level-Berechnung basierend auf XP
+  - [ ] XP-Bar im UI (animiert)
+  - [ ] Level-Up-Animation mit Konfetti
+- [ ] **Streak-System:**
+  - [ ] Tägliche Aktivität tracken (Cron-Job oder bei Login)
   - [ ] Streak-Kalender-Visualisierung
-  - [ ] Streak-Benachrichtigungen
-- [ ] Achievement-System
-  - [ ] Achievement-Definitionen
-  - [ ] Unlock-Logik
-  - [ ] Achievement-Showcase
-- [ ] Avatar-Creator (DiceBear-Integration)
-- [ ] Leaderboards (Basic-Version)
+  - [ ] Streak-Benachrichtigungen (Email via Unsend)
+  - [ ] Streak-Bonus XP
+- [ ] **Achievement-System:**
+  - [ ] Achievement-Definitionen in DB
+  - [ ] Unlock-Logik (Backend)
+  - [ ] Achievement-Showcase im Profil
+  - [ ] Achievement-Unlocked-Animation
+- [ ] **Avatar-System:**
+  - [ ] DiceBear-Integration
+  - [ ] Avatar-Creator beim Onboarding
+  - [ ] Avatar-Anzeige im Dashboard
+  - [ ] Freischaltbare Avatar-Elemente (später)
+- [ ] **Leaderboards:**
+  - [ ] Leaderboard-Schema in DB
+  - [ ] Top 10 pro Fach/Thema
+  - [ ] Leaderboard-Seite im UI
+  - [ ] Optional: Regionale Leaderboards
 
 **Deliverable:** Vollständiges Gamification-Erlebnis
 
@@ -711,17 +970,28 @@ Feedback
 
 **Tasks:**
 
-- [ ] n8n (self-hosted) deployen
-- [ ] Perplexity API integrieren
-- [ ] Workflow erstellen:
-  - [ ] Lehrplan-Recherche
-  - [ ] Lernkarten-Generierung
-  - [ ] Quiz-Fragen-Generierung
-- [ ] Admin-Dashboard bauen
-  - [ ] Content-Review-Interface
-  - [ ] Approve/Reject-Workflow
-  - [ ] Push zu Supabase
-- [ ] 20 weitere Themenkomplexe generieren (Gesamt: 25)
+- [ ] **n8n Setup:**
+  - [ ] n8n (self-hosted) auf Coolify deployen
+  - [ ] Workflow-Template erstellen
+- [ ] **KI-Integration:**
+  - [ ] Perplexity API-Key einrichten
+  - [ ] Workflow: Lehrplan-Input → Recherche → Lernkarten
+  - [ ] Workflow: Quiz-Fragen-Generierung
+  - [ ] Prompt-Engineering für konsistente Qualität
+- [ ] **Admin-Dashboard:**
+  - [ ] Content-Review-Interface bauen
+  - [ ] Entwurf-Ansicht (Preview von Lernkarten/Quiz)
+  - [ ] Approve/Reject-Buttons
+  - [ ] Edit-Möglichkeit vor Approval
+  - [ ] Push zu Supabase via API
+- [ ] **Content-Generierung:**
+  - [ ] 20 weitere Themenkomplexe generieren (Gesamt: 25)
+  - [ ] Manuelle Review (2-3 pro Tag)
+  - [ ] Bilder zuordnen/generieren
+- [ ] **Qualitätssicherung:**
+  - [ ] Automatische Formatprüfung
+  - [ ] Textlängen-Validation
+  - [ ] Feedback-Loop für Content-Verbesserungen
 
 **Deliverable:** 25 Themenkomplexe verfügbar, Content-Pipeline funktionsfähig
 
@@ -733,21 +1003,37 @@ Feedback
 
 **Tasks:**
 
-- [ ] Separates Eltern-Dashboard
-- [ ] Fortschritts-Charts (Recharts-Library)
-  - [ ] Themenkomplex-Completion
-  - [ ] Quiz-Performance
-  - [ ] Lernzeit-Statistiken
-- [ ] Kontrollfeatures
-  - [ ] Minispiel-Zeitlimit setzen
+- [ ] **Eltern-Dashboard UI:**
+  - [ ] Separates Dashboard-Layout
+  - [ ] Kinder-Übersicht (für Familien-Accounts)
+  - [ ] Kind auswählen → Fortschritt anzeigen
+- [ ] **Fortschritts-Charts:**
+  - [ ] Recharts-Library integrieren
+  - [ ] Themenkomplex-Completion-Chart
+  - [ ] Quiz-Performance über Zeit
+  - [ ] Lernzeit-Statistiken pro Woche/Monat
+  - [ ] Fach-Vergleich
+- [ ] **Kontrollfeatures:**
+  - [ ] Minispiel-Zeitlimit setzen (UI + DB)
   - [ ] Themenbereiche priorisieren
-- [ ] LemonSqueezy-Integration
-  - [ ] Abo-Auswahl
-  - [ ] Checkout-Flow
-  - [ ] Webhook-Handler
-- [ ] Tier-System (Free, Basic, Family)
-  - [ ] Feature-Gates
-  - [ ] Nutzungslimits (3 Themen/Tag im Free-Tier)
+  - [ ] Benachrichtigungen konfigurieren
+  - [ ] Lernziele setzen (optional)
+- [ ] **LemonSqueezy-Integration:**
+  - [ ] LemonSqueezy Account einrichten
+  - [ ] Produkte erstellen (Free, Basic, Family)
+  - [ ] Checkout-Flow implementieren
+  - [ ] Webhook-Handler für Subscription-Events
+  - [ ] Subscription-Status in DB synchronisieren
+- [ ] **Tier-System:**
+  - [ ] Feature-Gates implementieren
+  - [ ] Free-Tier: 3 Themenkomplexe/Tag Limit
+  - [ ] Basic-Tier: Unbegrenzte Themenkomplexe, 1 Kind
+  - [ ] Family-Tier: Unbegrenzt Kinder
+  - [ ] Upgrade-Flow im UI
+- [ ] **Account-Verwaltung:**
+  - [ ] Mehrere Kinder-Profile anlegen
+  - [ ] Kinder-Account zu Eltern-Account verknüpfen
+  - [ ] Abo-Verwaltung (Kündigung, Upgrade)
 
 **Deliverable:** Funktionierendes Eltern-Dashboard mit Zahlungen
 
@@ -759,19 +1045,51 @@ Feedback
 
 **Tasks:**
 
-- [ ] Feedback-System implementieren
-- [ ] Responsivität auf allen Geräten testen
-- [ ] Performance-Optimierung
-  - [ ] Image-Optimierung
-  - [ ] Code-Splitting
-  - [ ] Caching-Strategien
-- [ ] SEO-Grundlagen (Landing Page)
-- [ ] Error-Handling & User-Feedback verbessern
-- [ ] Onboarding-Flow verfeinern
-- [ ] LernSax-Mail-Integration (für Sachsen-Start)
-- [ ] DSGVO-Dokumente (Datenschutzerklärung, AGB)
-- [ ] Alpha-Testing mit Sohn und Familie
-- [ ] Bug-Fixing
+- [ ] **Feedback-System:**
+  - [ ] Feedback-Button nach jedem Themenkomplex
+  - [ ] Feedback-Formular (separate Route)
+  - [ ] Feedback-Kategorien (Bug, Content, Feature)
+  - [ ] Admin-View für Feedback-Review
+- [ ] **Responsivität:**
+  - [ ] Mobile-Optimierung aller Seiten
+  - [ ] Tablet-Optimierung
+  - [ ] Desktop-Ansicht verfeinern
+  - [ ] Cross-Browser-Testing (Chrome, Safari, Firefox)
+- [ ] **Performance-Optimierung:**
+  - [ ] Image-Optimierung (Next.js Image)
+  - [ ] Code-Splitting optimieren
+  - [ ] Lazy Loading für Komponenten
+  - [ ] Caching-Strategien (Cloudflare)
+  - [ ] Lighthouse-Score > 90
+- [ ] **SEO (Landing Page):**
+  - [ ] Meta-Tags optimieren
+  - [ ] Sitemap generieren
+  - [ ] robots.txt
+  - [ ] Open Graph Tags
+  - [ ] Structured Data (JSON-LD)
+- [ ] **Error-Handling:**
+  - [ ] Error-Boundaries implementieren
+  - [ ] User-freundliche Error-Messages
+  - [ ] Fallback-UI bei Fehlern
+  - [ ] Sentry-Integration für Error-Tracking
+- [ ] **Onboarding-Flow:**
+  - [ ] Willkommens-Tutorial für Kinder
+  - [ ] Avatar-Erstellung beim ersten Login
+  - [ ] Profil-Setup (Klasse, Bundesland)
+  - [ ] Feature-Highlights zeigen
+- [ ] **DSGVO-Compliance:**
+  - [ ] Datenschutzerklärung schreiben
+  - [ ] Impressum erstellen
+  - [ ] AGB verfassen
+  - [ ] Cookie-Consent-Banner (nur essentiell im Free-Tier)
+  - [ ] Datenexport-Funktion
+  - [ ] Account-Löschung-Funktion
+- [ ] **Testing:**
+  - [ ] Alpha-Testing mit Sohn
+  - [ ] Beta-Testing mit Familie/Freunden
+  - [ ] Bug-Fixing basierend auf Feedback
+  - [ ] Load-Testing (k6 oder Artillery)
+  - [ ] Security-Audit (OWASP Top 10)
 
 **Deliverable:** Produktionsreifer MVP
 
@@ -783,15 +1101,35 @@ Feedback
 
 **Tasks:**
 
-- [ ] Lehrer/Schulleitung Präsentation
-- [ ] Informationsmaterial für Eltern
-- [ ] Pilot-Klasse auswählen (idealerweise Klasse 5-8)
-- [ ] Registrierungs-Codes für Schüler verteilen
-- [ ] Monitoring & Support während Testphase
-- [ ] Feedback-Sammlung (Schüler, Eltern, Lehrer)
-- [ ] Iterative Verbesserungen basierend auf Feedback
+- [ ] **Schul-Vorbereitung:**
+  - [ ] Lehrer/Schulleitung Präsentation
+  - [ ] Informationsmaterial für Eltern erstellen
+  - [ ] Registrierungs-Codes generieren
+  - [ ] Support-Prozess definieren
+- [ ] **Launch:**
+  - [ ] Pilot-Klasse auswählen (5-8)
+  - [ ] Codes an Schüler verteilen
+  - [ ] Onboarding-Session in der Schule (optional)
+- [ ] **Monitoring:**
+  - [ ] Uptime Kuma Alerts einrichten
+  - [ ] PostHog Dashboards für KPIs
+  - [ ] Daily Checks: Fehlerrate, Performance
+  - [ ] User-Feedback aktiv einholen
+- [ ] **Support:**
+  - [ ] Support-Email einrichten (support@laernapp.de)
+  - [ ] FAQ-Seite erstellen
+  - [ ] Schnelle Response auf Probleme
+- [ ] **Feedback-Sammlung:**
+  - [ ] Schüler-Interviews (Was gefällt? Was nicht?)
+  - [ ] Eltern-Befragung
+  - [ ] Lehrer-Feedback
+  - [ ] Quantitative Metriken analysieren
+- [ ] **Iteration:**
+  - [ ] Bugs fixen (höchste Priorität)
+  - [ ] Quick Wins umsetzen
+  - [ ] Roadmap für Phase 2 Features
 
-**Deliverable:** Validiertes MVP mit echtem Nutzer-Feedback
+**Deliverable:** Validiertes MVP mit echtem Nutzer-Feedback, Learnings für Skalierung
 
 ---
 
@@ -1284,30 +1622,62 @@ LaernApp ist eine der führenden Lernplattformen in Deutschland. Kooperationen m
 ### Sofort (Diese Woche)
 
 1. **VPS bestellen:** Hetzner CX41, Standort Nürnberg
-2. **Domains registrieren:** laernapp.de (+ Alternativen)
-3. **Next.js Projekt aufsetzen:** App Router, TypeScript, Tailwind
-4. **shadcn/ui installieren:** + neobrutalism.dev-Komponenten
+2. **Domains registrieren:** laernapp.de, alternativ laern.app
+3. **Monorepo initialisieren:**
+   ```bash
+   mkdir laernapp && cd laernapp
+   pnpm init
+   pnpm add -D turbo
+   mkdir -p apps/landing apps/web packages/{ui,config,auth,database,types}
+   ```
+4. **Landing App erstellen:**
+   ```bash
+   cd apps/landing
+   pnpm create next-app@latest . --typescript --tailwind --app
+   ```
+5. **Web App erstellen:**
+   ```bash
+   cd apps/web
+   pnpm create next-app@latest . --typescript --tailwind --app
+   ```
 
 ### Woche 1-2
 
-5. **Coolify deployen:** Auf Hetzner VPS
-6. **Supabase (self-hosted) installieren:** Via Coolify
-7. **better-auth konfigurieren:** Mit Supabase-Verbindung
-8. **Database-Schema erstellen:** User, Themenkomplex, Progress-Tables
-9. **Landing Page bauen:** Mit Neobrutalismus-Design
+6. **Shared Packages setup:**
+   - @laernapp/ui mit shadcn/ui
+   - @laernapp/config mit Tailwind-Config
+   - @laernapp/types mit Zod-Schemas
+7. **Coolify deployen:** Auf Hetzner VPS
+8. **Supabase installieren:** Via Coolify
+9. **Drizzle Setup:**
+   ```bash
+   cd packages/database
+   pnpm add drizzle-orm postgres
+   pnpm add -D drizzle-kit
+   ```
+10. **better-auth konfigurieren:**
+    ```bash
+    cd packages/auth
+    pnpm add better-auth
+    ```
+11. **Database-Schema erstellen:** User, Themenkomplex, Progress mit Drizzle
+12. **Erste Deployment:** Landing + Web auf Coolify
+13. **DNS konfigurieren:** Cloudflare → laernapp.de, app.laernapp.de
 
 ### Woche 3-4
 
-10. **Lernkarten-Komponente:** Flip-Animation, Navigation
-11. **Quiz-Komponente:** Multiple-Choice, Feedback
-12. **Erste 5 Themenkomplexe:** Manuell erstellen als Seed
-13. **Basic Dashboard:** XP, Level, Themenliste
+14. **Lernkarten-Komponente:** Flip-Animation, Navigation
+15. **Quiz-Komponente:** Multiple-Choice, Feedback
+16. **Erste 5 Themenkomplexe:** Manuell erstellen als Seed
+17. **Basic Dashboard:** XP, Level, Themenliste
+18. **API Routes:** Themenkomplex-CRUD, Progress-Tracking
 
-### Parallel
+### Parallel (fortlaufend)
 
-14. **Rechtliche Grundlagen:** Gewerbeanmeldung, Datenschutzerklärung
-15. **n8n aufsetzen:** Content-Pipeline vorbereiten
-16. **Feedback mit Sohn:** Regelmäßige Tests, UI/UX-Feedback
+19. **Rechtliche Grundlagen:** Gewerbeanmeldung, Datenschutzerklärung
+20. **n8n aufsetzen:** Content-Pipeline vorbereiten
+21. **Feedback mit Sohn:** Regelmäßige Tests, UI/UX-Feedback
+22. **Code-Review:** Regelmäßige Refactoring-Sessions
 
 ---
 
@@ -1329,6 +1699,7 @@ Viel Erfolg bei der Umsetzung! 🚀📚✨
 
 ---
 
-**Dokument-Version:** 1.0
+**Dokument-Version:** 1.1 (Aktualisiert)
 **Erstellt am:** 04. Oktober 2025
-**Nächstes Review:** Nach MVP-Launch (Dezember 2025)
+**Aktualisiert am:** 05. Oktober 2025
+**Nächstes Review:** Nach Phase 1 Abschluss (ca. 2 Wochen)
