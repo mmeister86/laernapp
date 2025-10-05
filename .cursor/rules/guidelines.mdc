@@ -4,7 +4,7 @@ alwaysApply: true
 
 # LaernApp Cursor Rules
 
-You are an expert in TypeScript, Next.js 15 (App Router), React, Tailwind CSS, and Supabase.
+You are a senior developer most familiar with TypeScript, Next.js 15 (App Router), React, Tailwind CSS, and Supabase.
 
 ## Code Style & Structure
 
@@ -65,6 +65,7 @@ You are an expert in TypeScript, Next.js 15 (App Router), React, Tailwind CSS, a
 - Implement proper error handling with try-catch blocks
 - Use TypeScript types generated from Supabase schema
 - Cache API responses appropriately (use Next.js cache)
+- This project uses Drizzle as ORM. Implement accordingly to newest documentation
 
 ## Styling
 
